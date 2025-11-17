@@ -14,8 +14,11 @@ class ShortPollingEventStream implements IEventStream {
 	private string $streamId;
 	private string $queueFile;
 
+	private bool $started = false;
+	private bool $finished = false;
+
 	public function __construct() {
-		// Constructor is DI-only, no parameters here.
+		// Constructor is DI-only.
 	}
 
 	/**
@@ -28,20 +31,41 @@ class ShortPollingEventStream implements IEventStream {
 	}
 
 	public function start(): void {
-		// No header here – actual data delivery happens via poll-endpoint.
+		// No headers here – short polling uses a separate poll-endpoint.
+		$this->started = true;
 	}
 
-	public function push(array $event): void {
+	public function push(string $event, array $data): void {
+		if ($this->finished) return;
+		if (!$this->started) $this->start();
+
 		$queue = $this->loadQueue();
-		$queue[] = $event;
+		$queue[] = [
+			'type' => $event,
+			'data' => $data
+		];
 		$this->saveQueue($queue);
 	}
 
+	public function sendComment(string $text): void {
+		// Short polling cannot send comments – noop for interface compatibility.
+	}
+
+	public function isDisconnected(): bool {
+		// The producing side always runs in a normal HTTP request – always connected.
+		return false;
+	}
+
 	public function finish(array $finalPayload): void {
+		if ($this->finished) return;
+		$this->finished = true;
+
+		if (!$this->started) $this->start();
+
 		$queue = $this->loadQueue();
 		$queue[] = [
-			'type'	=> 'done',
-			'data'	=> $finalPayload,
+			'type' => 'done',
+			'data' => $finalPayload
 		];
 		$this->saveQueue($queue);
 	}
@@ -49,7 +73,7 @@ class ShortPollingEventStream implements IEventStream {
 	/**
 	 * Poll the next message – used by a dedicated poll endpoint.
 	 * Returns null if no message is available yet.
-	 * 
+	 *
 	 * @return array<string,mixed>|null
 	 */
 	public function pollNext(): ?array {
@@ -83,18 +107,18 @@ class ShortPollingEventStream implements IEventStream {
 		}
 
 		$data = json_decode($json, true);
-		if (!is_array($data)) {
-			return [];
-		}
-
-		return $data;
+		return is_array($data) ? $data : [];
 	}
 
 	/**
 	 * @param array<int,array<string,mixed>> $queue
 	 */
 	private function saveQueue(array $queue): void {
-		file_put_contents($this->queueFile, json_encode($queue));
+		file_put_contents(
+			$this->queueFile,
+			json_encode($queue, JSON_UNESCAPED_UNICODE),
+			LOCK_EX
+		);
 	}
 }
 

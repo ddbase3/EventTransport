@@ -5,9 +5,8 @@ namespace EventTransport\Stream;
 use EventTransport\Api\IEventStream;
 
 /**
- * Long polling variant – the server writes events to a queue,
- * and a dedicated long-poll endpoint consumes a single event
- * with blocking wait (up to timeout).
+ * Long polling variant – the server writes events to a file-backed queue,
+ * and a long-poll endpoint consumes a single event with blocking wait (up to timeout).
  */
 class LongPollingEventStream implements IEventStream {
 
@@ -15,10 +14,16 @@ class LongPollingEventStream implements IEventStream {
 	private string $streamId;
 	private string $queueFile;
 
+	private bool $started = false;
+	private bool $finished = false;
+
 	public function __construct() {
 		// DI-only constructor
 	}
 
+	/**
+	 * Must be injected by factory or resolver.
+	 */
 	public function init(string $serviceName, string $streamId): void {
 		$this->serviceName = $serviceName;
 		$this->streamId = $streamId;
@@ -27,26 +32,47 @@ class LongPollingEventStream implements IEventStream {
 
 	public function start(): void {
 		// No headers here – delivered via long-poll endpoint
+		$this->started = true;
 	}
 
-	public function push(array $event): void {
+	public function push(string $event, array $data): void {
+		if ($this->finished) return;
+		if (!$this->started) $this->start();
+
 		$queue = $this->loadQueue();
-		$queue[] = $event;
+		$queue[] = [
+			'type' => $event,
+			'data' => $data
+		];
 		$this->saveQueue($queue);
 	}
 
+	public function sendComment(string $text): void {
+		// Long polling cannot send comments – noop for API compatibility
+	}
+
+	public function isDisconnected(): bool {
+		// For long-poll producer side: always considered connected
+		return false;
+	}
+
 	public function finish(array $finalPayload): void {
+		if ($this->finished) return;
+		$this->finished = true;
+
+		if (!$this->started) $this->start();
+
 		$queue = $this->loadQueue();
 		$queue[] = [
-			'type'	=> 'done',
-			'data'	=> $finalPayload,
+			'type' => 'done',
+			'data' => $finalPayload
 		];
 		$this->saveQueue($queue);
 	}
 
 	/**
 	 * Long-poll endpoint helper: waits for next event or timeout.
-	 * 
+	 *
 	 * @return array<string,mixed>|null
 	 */
 	public function waitNext(int $timeoutSeconds = 20): ?array {
@@ -54,6 +80,7 @@ class LongPollingEventStream implements IEventStream {
 
 		while (true) {
 			$queue = $this->loadQueue();
+
 			if (!empty($queue)) {
 				$next = array_shift($queue);
 				$this->saveQueue($queue);
@@ -82,13 +109,18 @@ class LongPollingEventStream implements IEventStream {
 		if (!is_file($this->queueFile)) {
 			return [];
 		}
-		return json_decode(file_get_contents($this->queueFile) ?: '[]', true) ?: [];
+		$json = file_get_contents($this->queueFile);
+		if ($json === false) {
+			return [];
+		}
+		return json_decode($json, true) ?: [];
 	}
 
 	/**
 	 * @param array<int,array<string,mixed>> $queue
 	 */
 	private function saveQueue(array $queue): void {
-		file_put_contents($this->queueFile, json_encode($queue));
+		// Write atomically to avoid race conditions
+		file_put_contents($this->queueFile, json_encode($queue, JSON_UNESCAPED_UNICODE), LOCK_EX);
 	}
 }

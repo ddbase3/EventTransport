@@ -11,7 +11,7 @@ class EventTransportConfig implements IEventTransportConfig {
 
 	public function getDefaultMode(): string {
 		// Example: Hetzner Webhosting
-		return 'nostream';
+		return 'sse';
 	}
 
 	public function isAutoFallbackEnabled(): bool {

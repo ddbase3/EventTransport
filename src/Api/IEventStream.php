@@ -16,9 +16,20 @@ interface IEventStream {
 	/**
 	 * Pushes an incremental event to the client.
 	 * 
-	 * @param array<string,mixed> $event
+	 * @param string $event
+	 * @param array<string,mixed> $data
 	 */
-	public function push(array $event): void;
+	public function push(string $event, array $data): void;
+
+	/**
+	 * Sends an SSE comment (keep-alive / meta info).
+	 */
+	public function sendComment(string $text): void;
+
+	/**
+	 * Detects if the client has disconnected.
+	 */
+	public function isDisconnected(): bool;
 
 	/**
 	 * Finalizes the stream and sends a last payload.

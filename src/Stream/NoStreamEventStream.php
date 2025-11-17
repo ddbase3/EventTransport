@@ -6,33 +6,84 @@ use EventTransport\Api\IEventStream;
 
 /**
  * Simple non-streaming response – sends one JSON payload at the end.
+ * All events are buffered and emitted once in finish().
  */
-class NoStreamEventStream implements IEventStream {
+class NoStreamEventStream implements IEventStream
+{
+    /** @var array<int, array<string,mixed>> */
+    private array $buffer = [];
 
-	/** @var array<string,mixed> */
-	private array $buffer = [];
+    private bool $started = false;
+    private bool $finished = false;
 
-	public function start(): void {
-		// Make sure correct header is sent once.
-		if (!headers_sent()) {
-			header('Content-Type: application/json; charset=utf-8');
-			header('Cache-Control: no-cache, no-store, must-revalidate');
-		}
-	}
+    public function start(): void
+    {
+        if ($this->started) {
+            return;
+        }
+        $this->started = true;
 
-	public function push(array $event): void {
-		// Collect all events and send them in one final payload.
-		$this->buffer[] = $event;
-	}
+        if (!headers_sent()) {
+            header('Content-Type: application/json; charset=utf-8');
+            header('Cache-Control: no-cache, no-store, must-revalidate');
+        }
+    }
 
-	public function finish(array $finalPayload): void {
-       	// Merge buffered events into final payload for debugging/clients that care.
-		$payload = [
-			'type'		=> 'done',
-			'events'	=> $this->buffer,
-			'data'		=> $finalPayload,
-		];
+    /**
+     * Buffer all pushed data so we can deliver it in one final JSON.
+     */
+    public function push(string $event, array $data): void
+    {
+        if ($this->finished) {
+            return;
+        }
+        if (!$this->started) {
+            $this->start();
+        }
 
-		echo json_encode($payload);
-	}
+        $this->buffer[] = [
+            'type' => $event,
+            'data' => $data
+        ];
+    }
+
+    /**
+     * No-op for non-streaming output (kept for interface compatibility).
+     */
+    public function sendComment(string $text): void
+    {
+        // Non-streaming mode has no comments or heartbeats.
+    }
+
+    /**
+     * Non-streaming always reports connection open during request lifecycle.
+     */
+    public function isDisconnected(): bool
+    {
+        return false;
+    }
+
+    /**
+     * Emit one final JSON payload containing all buffered events.
+     */
+    public function finish(array $finalPayload): void
+    {
+        if ($this->finished) {
+            return;
+        }
+        $this->finished = true;
+
+        if (!$this->started) {
+            $this->start();
+        }
+
+        $payload = [
+            'type'   => 'done',
+            'events' => $this->buffer,
+            'data'   => $finalPayload,
+        ];
+
+        echo json_encode($payload, JSON_UNESCAPED_UNICODE);
+    }
 }
+
