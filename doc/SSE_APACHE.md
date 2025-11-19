@@ -229,7 +229,7 @@ Diese Datei sollte **NIEMALS gelöscht werden**, sie macht den Server *SSE-ready
     Header always set X-Frame-Options "DENY"
     Header always set X-Content-Type-Options "nosniff"
     Header always set Referrer-Policy "no-referrer-when-downgrade"
-    Header always set Permissions-Policy "geolocation=(), microphone=(), camera=()"
+    Header always set Permissions-Policy "geolocation=(self), microphone=(self), camera=(self)"
 
     # SSL
     SSLCertificateFile /etc/letsencrypt/live/example.com/fullchain.pem
