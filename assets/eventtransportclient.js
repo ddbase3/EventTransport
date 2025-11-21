@@ -1,146 +1,236 @@
-// Updated EventTransportClient.js
-// Supports: REST, SSE, WebSocket
+// EventTransportClient.js
+// Supports: REST, SSE, WebSocket, POST-SSE
 // Uses user-provided event list for SSE
 
 class EventTransportClient {
-    constructor(options = {}) {
-        this.options = Object.assign({
-            endpoint: null,
-            transport: "auto", // auto | rest | sse | ws
-            events: []          // custom SSE events
-        }, options);
+	constructor(options = {}) {
+		this.options = Object.assign({
+			endpoint: null,
+			transport: "auto",	// auto | rest | sse | ws | postsse
+			events: [],			// custom SSE events
+			payload: null		// request payload (prompt, etc.)
+		}, options);
 
-        this.onEventCallback = null;
-        this.activeTransport = null;
+		this.onEventCallback = null;
+		this.activeTransport = null;
 
-        this._es = null;
-        this._ws = null;
-    }
+		this._es = null;
+		this._ws = null;
+	}
 
-    _ensureCallback() {
-        if (typeof this.onEventCallback !== "function") {
-            this.onEventCallback = () => {};
-        }
-    }
+	_ensureCallback() {
+		if (typeof this.onEventCallback !== "function") {
+			this.onEventCallback = () => {};
+		}
+	}
 
-    async connect(callback) {
-        this.onEventCallback = callback;
-        this._ensureCallback();
+	async connect(callback) {
+		this.onEventCallback = callback;
+		this._ensureCallback();
 
-        // Explicit choice
-        if (this.options.transport === "sse") {
-            return this._connectSSE();
-        }
-        if (this.options.transport === "ws") {
-            return this._connectWS();
-        }
-        if (this.options.transport === "rest") {
-            this.activeTransport = "rest";
-            return;
-        }
+		// Explicit override
+		if (this.options.transport === "sse") {
+			return this._connectSSE();
+		}
+		if (this.options.transport === "postsse") {
+			return this._connectPostSSE();
+		}
+		if (this.options.transport === "ws") {
+			return this._connectWS();
+		}
+		if (this.options.transport === "rest") {
+			this.activeTransport = "rest";
+			return;
+		}
 
-        // AUTO DETECTION LOGIC
-        // Try WebSocket first but only if WS URL is clearly provided
-        if (typeof this.options.endpoint === "string" && this.options.endpoint.startsWith("ws")) {
-            try {
-                return await this._connectWS();
-            } catch {}
-        }
+		// AUTO DETECTION LOGIC
+		if (typeof this.options.endpoint === "string" && this.options.endpoint.startsWith("ws")) {
+			try {
+				return await this._connectWS();
+			} catch {}
+		}
 
-        // Otherwise assume SSE
-        try {
-            return this._connectSSE();
-        } catch {}
+		try {
+			return this._connectSSE();
+		} catch {}
 
-        // Fallback REST
-        this.activeTransport = "rest";
-    }
+		this.activeTransport = "rest";
+	}
 
-    async _connectSSE() {
-        this.activeTransport = "sse";
+	/**
+	 * Standard SSE (GET only)
+	 * Injects payload as ?prompt=... because EventSource cannot POST.
+	 */
+	async _connectSSE() {
+		this.activeTransport = "sse";
 
-        const es = new EventSource(this.options.endpoint);
-        this._es = es;
+		// Build URL with GET payload
+		let url = this.options.endpoint;
+		if (this.options.payload && typeof this.options.payload.prompt === "string") {
+			const p = encodeURIComponent(this.options.payload.prompt);
+			url += (url.includes("?") ? "&" : "?") + "prompt=" + p;
+		}
 
-        this._ensureCallback();
+		const es = new EventSource(url);
+		this._es = es;
 
-        // STANDARD MESSAGE
-        es.onmessage = (ev) => {
-            let data = ev.data;
-            try { data = JSON.parse(data); } catch {}
-            this.onEventCallback("message", data);
-        };
+		this._ensureCallback();
 
-        // DONE + ERROR standard
-        ["done", "error"].forEach(evt => {
-            es.addEventListener(evt, (ev) => {
-                let data = ev.data;
-                try { data = JSON.parse(data); } catch {}
-                this.onEventCallback(evt, data);
-            });
-        });
+		// Standard message
+		es.onmessage = (ev) => {
+			let data = ev.data;
+			try { data = JSON.parse(data); } catch {}
+			this.onEventCallback("message", data);
+		};
 
-        // USER EVENT LIST
-        if (Array.isArray(this.options.events)) {
-            this.options.events.forEach(evt => {
-                es.addEventListener(evt, (ev) => {
-                    let data = ev.data;
-                    try { data = JSON.parse(data); } catch {}
-                    this.onEventCallback(evt, data);
-                });
-            });
-        }
-    }
+		// done / error
+		["done", "error"].forEach(evt => {
+			es.addEventListener(evt, (ev) => {
+				let data = ev.data;
+				try { data = JSON.parse(data); } catch {}
+				this.onEventCallback(evt, data);
+			});
+		});
 
-    async _connectWS() {
-        return new Promise((resolve, reject) => {
-            try {
-                const ws = new WebSocket(this.options.endpoint);
-                this._ws = ws;
-                this.activeTransport = "ws";
+		// Custom event list
+		if (Array.isArray(this.options.events)) {
+			this.options.events.forEach(evt => {
+				es.addEventListener(evt, (ev) => {
+					let data = ev.data;
+					try { data = JSON.parse(data); } catch {}
+					this.onEventCallback(evt, data);
+				});
+			});
+		}
+	}
 
-                ws.onopen = () => resolve();
+	/**
+	 * POST-SSE mode:
+	 * 1) POST to proxy with endpoint + payload
+	 * 2) Proxy returns { ok, stream }
+	 * 3) Connect EventSource to stream URL
+	 */
+	async _connectPostSSE() {
+		this.activeTransport = "postsse";
+		this._ensureCallback();
 
-                ws.onmessage = (msg) => {
-                    let data = msg.data;
-                    try { data = JSON.parse(data); } catch {}
-                    this.onEventCallback("message", data);
-                };
+		try {
+			const res = await fetch("/eventtransportpostsseproxy.php", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					endpoint: this.options.endpoint,
+					payload: this.options.payload || {}
+				})
+			});
 
-                ws.onerror = (err) => this.onEventCallback("error", err);
-                ws.onclose = () => this.onEventCallback("close", null);
+			let info;
+			try {
+				info = await res.json();
+			} catch (e) {
+				this.onEventCallback("error", { message: "Invalid postsse proxy response", error: e.toString() });
+				return;
+			}
 
-            } catch (e) {
-                reject(e);
-            }
-        });
-    }
+			if (!info || !info.ok || !info.stream) {
+				this.onEventCallback("error", info || { message: "postsse proxy failed" });
+				return;
+			}
 
-    // Send request (REST or WS)
-    async request(payload, onChunk = null) {
-        this._ensureCallback();
+			const es = new EventSource(info.stream);
+			this._es = es;
 
-        if (this.activeTransport === "ws" && this._ws) {
-            this._ws.send(JSON.stringify(payload));
-            return;
-        }
+			// Standard message
+			es.onmessage = (ev) => {
+				let data = ev.data;
+				try { data = JSON.parse(data); } catch {}
+				this.onEventCallback("message", data);
+			};
 
-        // REST: POST
-        if (this.activeTransport === "rest") {
-            const res = await fetch(this.options.endpoint, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(payload)
-            });
-            const json = await res.json();
-            this.onEventCallback("message", json);
-        }
-    }
+			// done / error
+			["done", "error"].forEach(evt => {
+				es.addEventListener(evt, (ev) => {
+					let data = ev.data;
+					try { data = JSON.parse(data); } catch {}
+					this.onEventCallback(evt, data);
+				});
+			});
 
-    close() {
-        if (this._es) this._es.close();
-        if (this._ws) this._ws.close();
-    }
+			// custom events
+			if (Array.isArray(this.options.events)) {
+				this.options.events.forEach(evt => {
+					es.addEventListener(evt, (ev) => {
+						let data = ev.data;
+						try { data = JSON.parse(data); } catch {}
+						this.onEventCallback(evt, data);
+					});
+				});
+			}
+
+		} catch (e) {
+			this.onEventCallback("error", { message: "postsse connection error", error: e.toString() });
+		}
+	}
+
+	async _connectWS() {
+		return new Promise((resolve, reject) => {
+			try {
+				const ws = new WebSocket(this.options.endpoint);
+				this._ws = ws;
+				this.activeTransport = "ws";
+
+				ws.onopen = () => resolve();
+
+				ws.onmessage = (msg) => {
+					let data = msg.data;
+					try { data = JSON.parse(data); } catch {}
+					this.onEventCallback("message", data);
+				};
+
+				ws.onerror = (err) => this.onEventCallback("error", err);
+				ws.onclose = () => this.onEventCallback("close", null);
+
+			} catch (e) {
+				reject(e);
+			}
+		});
+	}
+
+	/**
+	 * request() is used only by:
+	 * - WS (send message)
+	 * - REST (POST)
+	 * SSE and POST-SSE ignore request(), because they already receive data via stream.
+	 */
+	async request(payload) {
+		this._ensureCallback();
+
+		// WS → send directly
+		if (this.activeTransport === "ws" && this._ws) {
+			this._ws.send(JSON.stringify(payload));
+			return;
+		}
+
+		// REST → POST
+		if (this.activeTransport === "rest") {
+			const res = await fetch(this.options.endpoint, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(payload)
+			});
+			const json = await res.json();
+			this.onEventCallback("message", json);
+			return;
+		}
+
+		// SSE → ignored (GET only)
+		// POST-SSE → ignored (POST already done in connect())
+	}
+
+	close() {
+		if (this._es) this._es.close();
+		if (this._ws) this._ws.close();
+	}
 }
 
 window.EventTransportClient = EventTransportClient;
