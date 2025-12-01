@@ -6,9 +6,9 @@ class EventTransportClient {
 	constructor(options = {}) {
 		this.options = Object.assign({
 			endpoint: null,
-			transport: "auto",	// auto | rest | sse | ws | postsse
-			events: [],			// custom SSE events
-			payload: null		// request payload (prompt, etc.)
+			transport: "auto",		// auto | rest | sse | ws | postsse
+			events: [],				// custom SSE events
+			payload: null			// request payload (prompt, etc.)
 		}, options);
 
 		this.onEventCallback = null;
@@ -71,7 +71,8 @@ class EventTransportClient {
 			url += (url.includes("?") ? "&" : "?") + "prompt=" + p;
 		}
 
-		const es = new EventSource(url);
+		// IMPORTANT: SSE with credentials enabled
+		const es = new EventSource(url, { withCredentials: true });
 		this._es = es;
 
 		this._ensureCallback();
@@ -117,7 +118,10 @@ class EventTransportClient {
 		try {
 			const res = await fetch("/eventtransportpostsseproxy.php", {
 				method: "POST",
-				headers: { "Content-Type": "application/json" },
+				credentials: "include",		// important: send session cookie
+				headers: {
+					"Content-Type": "application/json"
+				},
 				body: JSON.stringify({
 					endpoint: this.options.endpoint,
 					payload: this.options.payload || {}
@@ -137,7 +141,8 @@ class EventTransportClient {
 				return;
 			}
 
-			const es = new EventSource(info.stream);
+			// IMPORTANT: SSE with credentials enabled
+			const es = new EventSource(info.stream, { withCredentials: true });
 			this._es = es;
 
 			// Standard message
@@ -215,6 +220,7 @@ class EventTransportClient {
 		if (this.activeTransport === "rest") {
 			const res = await fetch(this.options.endpoint, {
 				method: "POST",
+				credentials: "include",		// important: keep session stable
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify(payload)
 			});
@@ -223,8 +229,8 @@ class EventTransportClient {
 			return;
 		}
 
-		// SSE → ignored (GET only)
-		// POST-SSE → ignored (POST already done in connect())
+		// SSE → ignored
+		// POST-SSE → ignored
 	}
 
 	close() {

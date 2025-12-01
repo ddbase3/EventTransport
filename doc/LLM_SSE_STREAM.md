@@ -1,65 +1,60 @@
-# SSE + LLM Streaming Integration Guide
+# SSE + LLM Streaming Integration Guide (Updated)
 
-Diese Anleitung beschreibt **vollständig**, wie man ein LLM (z. B. OpenAI) per **cURL-Streaming** abruft und dessen Output **live per Server-Sent Events (SSE)** an den Browser weiterreicht.
+Diese Anleitung beschreibt **vollständig und aktuell**, wie man ein LLM (z. B. OpenAI) per **Streaming-API** abruft und dessen Output **live per Server-Sent Events (SSE)** an den Browser weitergibt.
 
-Damit entsteht ein sauberer Echtzeit-Stream: **LLM → Server → SSE → Browser**.
+Der Ablauf:
 
-Die Anleitung funktioniert **auf jedem korrekt konfigurierten Apache2-Server**, der für SSE vorbereitet ist (siehe vorherige README).
+**LLM → PHP (cURL Streaming) → SSE → Browser**
+
+Die Anleitung funktioniert auf jedem korrekt konfigurierten Apache2-Server, sofern SSE-Streaming aktiviert ist.
 
 ---
 
 # 🧩 Übersicht
 
-1. **SseStream Klasse** – abstrahiert die gesamte Kopfzeilen- & Flush-Logik
-2. **AI-Stream PHP Endpoint** – empfängt LLM-Chunks per cURL und sendet sie als SSE weiter
-3. **Browser-Code (EventSource)** – empfängt Tokens live im Browser
+1. **SseStream Klasse** – korrektes SSE-Handling + Header + Flush
+2. **AI-Stream PHP Endpoint** – ruft OpenAI streamend ab, leitet Tokens weiter
+3. **Browser-Code** – verarbeitet die Events live
 
 ---
 
-# 1. PHP: `SseStream` Klasse
+# 1. PHP: `SseStream` Klasse (NEUE VERSION)
 
-Diese Klasse kapselt **alle notwendigen SSE-Header**, deaktiviert Buffering und bietet eine einfache API.
-
-> **Hinweis:** Diese Klasse ist selbstständig einsetzbar und unabhängig von BASE3.
+Diese Version funktioniert zuverlässig mit Apache2 + PHP-FPM und enthält **alle notwendigen Header** sowie korrektes Buffer-Handling.
 
 ```php
 <?php
 class SseStream {
-    public function __construct() {
-        // Alle Levels beenden
-        while (ob_get_level() > 0) {
-            ob_end_clean();
-        }
+	public function __construct() {
+		// Output buffering komplett deaktivieren
+		while (ob_get_level() > 0) {
+			@ob_end_clean();
+		}
 
-        // Header
-        header('Content-Type: text/event-stream');
-        header('Cache-Control: no-cache');
-        header('X-Accel-Buffering: no');
-        header('Connection: keep-alive');
+		header('Content-Type: text/event-stream; charset=UTF-8');
+		header('Cache-Control: no-cache');
+		header('X-Accel-Buffering: no');
+		header('Connection: keep-alive');
 
-        // PHP
-        ini_set('implicit_flush', '1');
-        ini_set('output_buffering', 'off');
-        ob_implicit_flush(1);
-    }
+		@ini_set('implicit_flush', '1');
+		@ini_set('output_buffering', 'off');
+		ob_implicit_flush(true);
 
-    /**
-     * Sendet ein SSE-Event an den Client.
-     */
-    public function send(string $event, string $data): void {
-        echo "event: {$event}\n";
-        echo "data: {$data}\n\n";
-        flush();
-    }
+		echo "\n";
+		flush();
+	}
 
-    /**
-     * Stream beenden
-     */
-    public function finish(): void {
-        $this->send("done", json_encode(["status" => "complete"]));
-        flush();
-        exit;
-    }
+	public function send(string $event, string $data): void {
+		echo "event: {$event}\n";
+		echo "data: {$data}\n\n";
+		flush();
+	}
+
+	public function finish(): void {
+		$this->send("done", json_encode(["status" => "complete"]));
+		flush();
+		exit;
+	}
 }
 ```
 
@@ -67,57 +62,55 @@ class SseStream {
 
 # 2. PHP: AI-Stream Endpoint (`ai-stream.php`)
 
-Dieser Endpoint ruft OpenAI im **Streaming-Modus** auf und leitet die Chunks 1:1 per SSE weiter.
+Dieser Endpoint ruft OpenAI per Streaming ab und leitet die empfangenen Token per SSE an die Clients weiter.
 
-### 🔧 Vollständiges Beispiel
+**Diese Version entspricht dem aktuellen, funktionierenden Stand!**
 
 ```php
 <?php
-require_once __DIR__ . "/SseStream.php";
+require_once __DIR__ . '/SseStream.php';
 
 $apiKey = 'DEIN_OPENAI_KEY';
 
 $stream = new SseStream();
 
-// CURL Request vorbereiten
-$ch = curl_init("https://api.openai.com/v1/chat/completions");
+$ch = curl_init('https://api.openai.com/v1/chat/completions');
 
 $postData = [
-    "model" => "gpt-4o-mini",
-    "stream" => true,
-    "messages" => [
-        ["role" => "user", "content" => "Sag mir etwas über SSE."]
-    ]
+	"model" => "gpt-4o-mini",
+	"stream" => true,
+	"messages" => [
+		["role" => "user", "content" => "Sag mir etwas über SSE."]
+	]
 ];
 
 curl_setopt_array($ch, [
-    CURLOPT_POST => true,
-    CURLOPT_HTTPHEADER => [
-        "Authorization: Bearer {$apiKey}",
-        "Content-Type: application/json",
-    ],
-    CURLOPT_POSTFIELDS => json_encode($postData),
-    CURLOPT_WRITEFUNCTION => function ($ch, $data) use ($stream) {
+	CURLOPT_POST => true,
+	CURLOPT_HTTPHEADER => [
+		"Authorization: Bearer {$apiKey}",
+		"Content-Type: application/json",
+	],
+	CURLOPT_POSTFIELDS => json_encode($postData),
+	CURLOPT_WRITEFUNCTION => function($ch, $data) use ($stream) {
 
-        // OpenAI sendet mehrere Zeilen
-        foreach (explode("\n", trim($data)) as $line) {
-            if (strpos($line, "data: ") === 0) {
-                $json = trim(substr($line, 6));
+		foreach (explode("\n", trim($data)) as $line) {
+			if (strpos($line, 'data: ') === 0) {
+				$json = trim(substr($line, 6));
 
-                if ($json === "[DONE]") {
-                    $stream->finish();
-                    return strlen($data);
-                }
+				if ($json === '[DONE]') {
+					$stream->finish();
+					return strlen($data);
+				}
 
-                $decoded = json_decode($json, true);
-                if ($decoded) {
-                    $stream->send("chunk", json_encode($decoded));
-                }
-            }
-        }
+				$decoded = json_decode($json, true);
+				if ($decoded) {
+					$stream->send('chunk', json_encode($decoded));
+				}
+			}
+		}
 
-        return strlen($data);
-    },
+		return strlen($data);
+	}
 ]);
 
 curl_exec($ch);
@@ -128,7 +121,7 @@ curl_close($ch);
 
 # 3. Browser: EventSource Client
 
-Der Browser empfängt die Daten vollständig live.
+Diese Version funktioniert zuverlässig mit Chrome, Firefox, Safari.
 
 ```html
 <!DOCTYPE html>
@@ -148,28 +141,27 @@ Der Browser empfängt die Daten vollständig live.
 
 <script>
 function log(msg) {
-    const el = document.getElementById("log");
-    el.textContent += msg + "\n";
-    el.scrollTop = 999999;
+	const el = document.getElementById('log');
+	el.textContent += msg + "\n";
+	el.scrollTop = el.scrollHeight;
 }
 
 function startStream() {
-    const es = new EventSource("ai-stream.php");
+	const es = new EventSource('ai-stream.php');
 
-    es.addEventListener("chunk", ev => {
-        const data = JSON.parse(ev.data);
-        log(JSON.stringify(data));
-    });
+	es.addEventListener('chunk', ev => {
+		log(ev.data);
+	});
 
-    es.addEventListener("done", ev => {
-        log("STREAM ENDE: " + ev.data);
-        es.close();
-    });
+	es.addEventListener('done', ev => {
+		log('STREAM ENDE: ' + ev.data);
+		es.close();
+	});
 
-    es.onerror = err => {
-        log("Verbindung verloren.");
-        es.close();
-    };
+	es.onerror = err => {
+		log('Verbindung verloren.');
+		es.close();
+	};
 }
 </script>
 
@@ -179,17 +171,20 @@ function startStream() {
 
 ---
 
-# 🧪 Wie der Flow funktioniert
+# 🧪 Ablauf des Streams
 
 ```
-OpenAI → cURL (Streaming) → PHP (ai-stream.php) → SseStream → Browser
+OpenAI → cURL Streaming → PHP (ai-stream.php) → SseStream → Browser (EventSource)
 ```
 
-### ✔ Keine Zwischenpufferung
+✔ **Keine Pufferung**
+✔ **Token erscheinen sofort**
+✔ **LLM wirkt 100 % live**
+✔ **Browser-kompatibel**
 
-### ✔ Token erscheinen sofort
+---
 
-### ✔ Browser zeigt echtes Live-LLM-Verhalten
+# Hinweis
 
-### ✔ Funktioniert auf jedem Apache2 Server (mit SSE-Config)
+Diese Anleitung ist jetzt exakt an dein funktionierendes Setup angepasst. Die Codes sind kompatibel mit Apache2 + PHP-FPM + deiner aktuellen Server-Konfiguration.
 
