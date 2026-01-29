@@ -10,93 +10,89 @@ use EventTransport\Api\IEventStream;
  */
 class SseEventStream implements IEventStream {
 
-	private bool $started = false;
-	private bool $finished = false;
+        private bool $started = false;
+        private bool $finished = false;
 
-	/**
-	 * Prepare and start the SSE stream.
-	 */
-	public function start(): void {
-		if ($this->started) return;
-		$this->started = true;
+        /**
+         * Padding bytes to avoid upstream buffering (FCGI/proxy thresholds).
+         * 0 disables padding.
+         */
+        private int $padBytes = 1024;
 
-		// Clean existing output buffers (avoid buffering interference)
-		while (ob_get_level() > 0) {
-			@ob_end_clean();
-		}
+        /**
+         * Only pad every N token events (to reduce bandwidth).
+         * 1 = every token, 10 = every 10th token.
+         */
+        private int $padEvery = 1;
 
-		// Always enforce correct SSE headers
-		// (remove Content-Type if something set it too early)
-		header_remove('Content-Type');
-		header('Content-Type: text/event-stream; charset=UTF-8');
-		header('Cache-Control: no-cache');
-		header('X-Accel-Buffering: no');
-		header('Connection: keep-alive');
+        private int $tokenCount = 0;
 
-		// Make PHP flush output immediately
-		@ini_set('implicit_flush', '1');
-		@ini_set('output_buffering', 'off');
-		ob_implicit_flush(true);
+        public function start(): void {
+                if ($this->started) return;
+                $this->started = true;
 
-		// Initial empty line to begin SSE stream
-		echo "\n";
-		flush();
-	}
+                while (ob_get_level() > 0) {
+                        @ob_end_clean();
+                }
 
-	/**
-	 * Push an SSE event with JSON payload.
-	 */
-	public function push(string $event, array $data): void {
-		if ($this->finished) return;
-		if (!$this->started) $this->start();
-		if ($this->isDisconnected()) return;
+                header_remove("Content-Type");
+                header("Content-Type: text/event-stream; charset=UTF-8");
+                header("Cache-Control: no-cache");
+                header("X-Accel-Buffering: no");
+                header("Connection: keep-alive");
 
-		echo "event: {$event}\n";
-		echo 'data: ' . json_encode($data, JSON_UNESCAPED_UNICODE) . "\n\n";
+                @ini_set("implicit_flush", "1");
+                @ini_set("output_buffering", "off");
+                ob_implicit_flush(true);
 
-		flush();
-	}
+                echo "\n";
+                flush();
+        }
 
-	/**
-	 * Send an SSE comment (heartbeat).
-	 * Useful to keep connections alive.
-	 */
-	public function sendComment(string $text): void {
-		if ($this->finished) return;
-		if (!$this->started) $this->start();
-		if ($this->isDisconnected()) return;
+        public function push(string $event, array $data): void {
+                if ($this->finished) return;
+                if (!$this->started) $this->start();
+                if ($this->isDisconnected()) return;
 
-		// SSE comment line
-		echo ": {$text}\n\n";
+                echo "event: {$event}\n";
+                echo "data: " . json_encode($data, JSON_UNESCAPED_UNICODE) . "\n\n";
 
-		flush();
-	}
+                // Pad only for token events, and only every Nth token.
+                if ($event === "token") {
+                        $this->tokenCount++;
+                        if ($this->padBytes > 0 && $this->padEvery > 0 && ($this->tokenCount % $this->padEvery) === 0) {
+                                echo ":" . str_repeat(" ", $this->padBytes) . "\n\n";
+                        }
+                }
 
-	/**
-	 * Returns true if the client has disconnected.
-	 */
-	public function isDisconnected(): bool {
-		// PHP-native detection of aborted connection
-		return connection_aborted() === 1;
-	}
+                flush();
+        }
 
-	/**
-	 * Send a final event and close the stream.
-	 */
-	public function finish(array $finalPayload): void {
-		if ($this->finished) return;
-		$this->finished = true;
+        public function sendComment(string $text): void {
+                if ($this->finished) return;
+                if (!$this->started) $this->start();
+                if ($this->isDisconnected()) return;
 
-		if (!$this->started) {
-			$this->start();
-		}
+                echo ": {$text}\n\n";
+                flush();
+        }
 
-		if (!$this->isDisconnected()) {
-			echo "event: done\n";
-			echo 'data: ' . json_encode($finalPayload, JSON_UNESCAPED_UNICODE) . "\n\n";
-			flush();
-		}
+        public function isDisconnected(): bool {
+                return connection_aborted() === 1;
+        }
 
-		// not calling exit; caller decides
-	}
+        public function finish(array $finalPayload): void {
+                if ($this->finished) return;
+                $this->finished = true;
+
+                if (!$this->started) {
+                        $this->start();
+                }
+
+                if (!$this->isDisconnected()) {
+                        echo "event: done\n";
+                        echo "data: " . json_encode($finalPayload, JSON_UNESCAPED_UNICODE) . "\n\n";
+                        flush();
+                }
+        }
 }
