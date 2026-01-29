@@ -13,11 +13,15 @@ class SseEventStream implements IEventStream {
         private bool $started = false;
         private bool $finished = false;
 
+	// NOTE:
+	// Padding is intentionally disabled by default.
+	// This exists as a last-resort workaround for aggressive proxy/FCGI buffering.
+
         /**
          * Padding bytes to avoid upstream buffering (FCGI/proxy thresholds).
          * 0 disables padding.
          */
-        private int $padBytes = 1024;
+        private int $padBytes = 0;
 
         /**
          * Only pad every N token events (to reduce bandwidth).
