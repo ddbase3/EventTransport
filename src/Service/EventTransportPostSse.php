@@ -23,7 +23,7 @@ class EventTransportPostSse implements IOutput {
 		return 'eventtransportpostsse';
 	}
 
-	public function getOutput($out = 'html'): string {
+	public function getOutput(string $out = 'html', bool $final = false): string {
 
 		if (session_status() !== PHP_SESSION_ACTIVE) {
 			session_start();

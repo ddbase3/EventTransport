@@ -178,7 +178,7 @@ class Sse implements IOutput {
         return 'sse';
     }
 
-    public function getOutput($out = 'html') {
+    public function getOutput(string $out = 'html', bool $final = false): string {
         // Create SSE stream (serviceName, streamId)
         $stream = $this->eventstreamfactory->createStream(
             'ssestream-example',
@@ -212,7 +212,7 @@ class Sse implements IOutput {
         return '';
     }
 
-    public function getHelp() {
+    public function getHelp(): string {
         return "Help of Sse\n";
     }
 }
