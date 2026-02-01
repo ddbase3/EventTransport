@@ -56,12 +56,14 @@ class EventTransportPostSseProxy implements IOutput {
                 ];
 
                 // Stream-URL aufbauen, analog zu Base3-Routing
-                $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+		$isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || 
+			(isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https');
+		$scheme = $isHttps ? 'https' : 'http';
                 $host   = $_SERVER['HTTP_HOST'] ?? 'localhost';
                 $base   = rtrim(dirname($_SERVER['SCRIPT_NAME']), '/'); // meist '' oder '/subdir'
 
                 $path   = $base . '/eventtransportpostsse.php?id=' . urlencode($id);
-                $streamUrl = $scheme . '://' . $host . $path;
+		$streamUrl = $scheme . '://' . $host . $path;
 
                 return json_encode([
                         'ok'     => true,
