@@ -51,6 +51,7 @@ class SseEventStream implements IEventStream {
 		header("Content-Type: text/event-stream");
 		header("Cache-Control: no-cache, no-transform"); // no-transform verbietet Proxies das Komprimieren
 		header("X-Accel-Buffering: no");
+		header('Content-Encoding: none');
 		header("Connection: keep-alive");
 
 		@ini_set("implicit_flush", "1");
