@@ -31,27 +31,41 @@ class SseEventStream implements IEventStream {
 
         private int $tokenCount = 0;
 
-        public function start(): void {
-                if ($this->started) return;
-                $this->started = true;
+	public function start(): void {
+		if ($this->started) return;
+		$this->started = true;
 
-                while (ob_get_level() > 0) {
-                        @ob_end_clean();
-                }
+		// 1. Buffering radikal beenden
+		while (ob_get_level() > 0) {
+			@ob_end_clean();
+		}
 
-                header_remove("Content-Type");
-                header("Content-Type: text/event-stream; charset=UTF-8");
-                header("Cache-Control: no-cache");
-                header("X-Accel-Buffering: no");
-                header("Connection: keep-alive");
+		// 2. Kompression verhindern (WICHTIG für Apache + Proxy)
+		if (function_exists('apache_setenv')) {
+			@apache_setenv('no-gzip', '1');
+		}
+		@ini_set('zlib.output_compression', '0');
 
-                @ini_set("implicit_flush", "1");
-                @ini_set("output_buffering", "off");
-                ob_implicit_flush(true);
+		header_remove("Content-Type");
+		// Wichtig: kein charset bei event-stream laut Spezifikation, nur Content-Type
+		header("Content-Type: text/event-stream");
+		header("Cache-Control: no-cache, no-transform"); // no-transform verbietet Proxies das Komprimieren
+		header("X-Accel-Buffering: no");
+		header("Connection: keep-alive");
 
-                echo "\n";
-                flush();
-        }
+		@ini_set("implicit_flush", "1");
+		@ini_set("output_buffering", "off");
+		if (function_exists('ob_implicit_flush')) {
+			ob_implicit_flush(true);
+		}
+
+		// 3. Den Caddy/Proxy-Puffer "anstoßen"
+		// Manche Proxies brauchen ein paar Bytes, um den Stream zu öffnen
+		echo ":" . str_repeat(" ", 2048) . "\n\n"; 
+		echo "retry: 2000\n\n";
+    
+		flush();
+	}
 
         public function push(string $event, array $data): void {
                 if ($this->finished) return;
