@@ -56,7 +56,9 @@ class EventTransportPostSse implements IOutput {
 		$this->startHeaders();
 
 		// Resolve target URL relative to current base
-		$scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+		$isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ||
+			(isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https');
+		$scheme = $isHttps ? 'https' : 'http';
 		$host   = $_SERVER['HTTP_HOST'] ?? 'localhost';
 		$base   = rtrim(dirname($_SERVER['SCRIPT_NAME']), '/');
 
@@ -78,6 +80,7 @@ class EventTransportPostSse implements IOutput {
 			CURLOPT_POSTFIELDS     => http_build_query($payload, '', '&'),
 			CURLOPT_HTTPHEADER     => $headers,
 			CURLOPT_RETURNTRANSFER => false, // stream directly
+			CURLOPT_BUFFERSIZE     => 128,
 			CURLOPT_WRITEFUNCTION  => function ($ch, $chunk) {
 
 				if (connection_aborted() === 1) {
@@ -87,6 +90,7 @@ class EventTransportPostSse implements IOutput {
 				// Forward upstream SSE chunk 1:1
 				echo $chunk;
 				flush();
+				if (function_exists('ob_flush')) @ob_flush();
 				return strlen($chunk);
 			},
 			CURLOPT_TIMEOUT        => 0

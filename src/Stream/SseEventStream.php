@@ -62,8 +62,8 @@ class SseEventStream implements IEventStream {
 
 		// 3. Den Caddy/Proxy-Puffer "anstoßen"
 		// Manche Proxies brauchen ein paar Bytes, um den Stream zu öffnen
-		echo ":" . str_repeat(" ", 2048) . "\n\n"; 
-		echo "retry: 2000\n\n";
+		// echo ":" . str_repeat(" ", 2048) . "\n\n"; 
+		// echo "retry: 2000\n\n";
     
 		flush();
 	}
