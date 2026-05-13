@@ -8,7 +8,7 @@ class EventTransportClient {
 			endpoint: null,
 			transport: "auto",		// auto | rest | sse | ws | postsse
 			events: [],				// custom SSE events
-			payload: null			// request payload (prompt, etc.)
+			payload: null			// request payload (prompt, reference, etc.)
 		}, options);
 
 		this.onEventCallback = null;
@@ -43,7 +43,7 @@ class EventTransportClient {
 			return;
 		}
 
-		// AUTO DETECTION LOGIC
+		// Auto detection logic
 		if (typeof this.options.endpoint === "string" && this.options.endpoint.startsWith("ws")) {
 			try {
 				return await this._connectWS();
@@ -58,18 +58,13 @@ class EventTransportClient {
 	}
 
 	/**
-	 * Standard SSE (GET only)
-	 * Injects payload as ?prompt=... because EventSource cannot POST.
+	 * Standard SSE.
+	 * EventSource can only use GET, so the payload is appended to the URL.
 	 */
 	async _connectSSE() {
 		this.activeTransport = "sse";
 
-		// Build URL with GET payload
-		let url = this.options.endpoint;
-		if (this.options.payload && typeof this.options.payload.prompt === "string") {
-			const p = encodeURIComponent(this.options.payload.prompt);
-			url += (url.includes("?") ? "&" : "?") + "prompt=" + p;
-		}
+		const url = this._appendPayloadToUrl(this.options.endpoint, this.options.payload);
 
 		// IMPORTANT: SSE with credentials enabled
 		const es = new EventSource(url, { withCredentials: true });
@@ -161,7 +156,7 @@ class EventTransportClient {
 				});
 			});
 
-			// custom events
+			// Custom events
 			if (Array.isArray(this.options.events)) {
 				this.options.events.forEach(evt => {
 					es.addEventListener(evt, (ev) => {
@@ -210,13 +205,13 @@ class EventTransportClient {
 	async request(payload) {
 		this._ensureCallback();
 
-		// WS → send directly
+		// WS -> send directly
 		if (this.activeTransport === "ws" && this._ws) {
 			this._ws.send(JSON.stringify(payload));
 			return;
 		}
 
-		// REST → POST
+		// REST -> POST
 		if (this.activeTransport === "rest") {
 			const res = await fetch(this.options.endpoint, {
 				method: "POST",
@@ -229,13 +224,42 @@ class EventTransportClient {
 			return;
 		}
 
-		// SSE → ignored
-		// POST-SSE → ignored
+		// SSE -> ignored
+		// POST-SSE -> ignored
 	}
 
 	close() {
 		if (this._es) this._es.close();
 		if (this._ws) this._ws.close();
+	}
+
+	_appendPayloadToUrl(url, payload) {
+		if (!url || !payload || typeof payload !== "object") {
+			return url;
+		}
+
+		const params = [];
+
+		Object.keys(payload).forEach(key => {
+			const value = payload[key];
+
+			if (value === null || typeof value === "undefined") {
+				return;
+			}
+
+			if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+				params.push(encodeURIComponent(key) + "=" + encodeURIComponent(String(value)));
+				return;
+			}
+
+			params.push(encodeURIComponent(key) + "=" + encodeURIComponent(JSON.stringify(value)));
+		});
+
+		if (params.length === 0) {
+			return url;
+		}
+
+		return url + (url.includes("?") ? "&" : "?") + params.join("&");
 	}
 }
 
