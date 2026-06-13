@@ -1,0 +1,241 @@
+<?php declare(strict_types=1);
+
+namespace EventTransport\Example;
+
+use Base3\Api\IOutput;
+use EventTransport\Service\EventStreamFactory;
+
+class EventTransportDemo implements IOutput {
+
+	/** @var EventStreamFactory */
+	private EventStreamFactory $factory;
+
+	public function __construct(EventStreamFactory $factory) {
+		$this->factory = $factory;
+	}
+
+	public static function getName(): string {
+		return 'eventtransportdemo';
+	}
+
+	/**
+	 * Main output router
+	 */
+	public function getOutput($out = "html") {
+
+		$action = $_GET['action'] ?? null;
+
+		if ($action === 'run') {
+			return $this->runStreamAction();
+		}
+
+		return $this->renderHtml();
+	}
+
+	public function getHelp() {
+		return [
+			'html' => 'Shows test UI',
+			'action=run' => 'Starts stream (returns JSON)',
+			'mode=nostream|short' => 'Transport mode'
+		];
+	}
+
+	/**
+	 * Static HTML frontend
+	 */
+	private function renderHtml(): string {
+
+		$modes = ['nostream','short'];
+
+		ob_start();
+		?>
+		<!DOCTYPE html>
+		<html>
+		<head>
+			<meta charset="utf-8">
+			<title>EventTransport Test</title>
+
+			<script src="/plugin/EventTransport/assets/eventtransport.js"></script>
+
+			<style>
+				body { font-family: sans-serif; padding:20px; }
+				#logbox {
+					border:1px solid #888;
+					padding:10px;
+					height:300px;
+					overflow-y:auto;
+					white-space:pre;
+					background:#f9f9f9;
+				}
+			</style>
+		</head>
+		<body>
+
+		<h1>EventTransport Test</h1>
+
+		<form id="testForm">
+			<label>Mode: </label>
+			<select id="modeSelect" name="mode">
+				<?php foreach ($modes as $m): ?>
+					<option value="<?= htmlspecialchars($m) ?>"><?= htmlspecialchars($m) ?></option>
+				<?php endforeach; ?>
+			</select>
+
+			<button type="submit">Start Test</button>
+		</form>
+
+		<h2>Log</h2>
+		<div id="logbox"></div>
+
+		<script>
+			function log(msg) {
+				const box = document.getElementById("logbox");
+				box.textContent += msg + "\n";
+				box.scrollTop = box.scrollHeight;
+			}
+
+			document.getElementById("testForm").addEventListener("submit", async (ev) => {
+				ev.preventDefault();
+
+				const mode = document.getElementById("modeSelect").value;
+				log("starting test mode: " + mode);
+
+				const cfg = new EventTransportConfig({
+					mode: mode,
+					fallbackModes: [],
+					baseHttpUrl: window.location.pathname + "?action=run",
+					wsUrl: null
+				});
+
+				const streamId = "demo_" + Math.floor(Math.random()*9999999);
+				const channel = TransportResolver.createChannel(cfg, "demo", streamId);
+
+				channel.onOpen(() => log("[open]"));
+				channel.onMessage(m => log("[msg] " + JSON.stringify(m)));
+				channel.onError(e => log("[error] " + e));
+
+				channel.connect({start:true});
+			});
+		</script>
+
+		</body>
+		</html>
+		<?php
+		return ob_get_clean();
+	}
+
+	/**
+	 * Stream entry
+	 */
+	private function runStreamAction() {
+
+		header('Content-Type: application/json');
+		header('Cache-Control: no-cache, must-revalidate');
+
+		$mode = $_GET['mode'] ?? 'nostream';
+		$service = 'demo';
+		$streamId = $_GET['stream'] ?? uniqid('stream_', true);
+
+		$stream = $this->factory->createByMode($mode, $service, $streamId);
+
+		switch ($mode) {
+			case 'short':
+				return $this->handleShortPolling($stream);
+
+			default:
+				return $this->handleNoStream($stream);
+		}
+	}
+
+	/**
+	 * NoStream = synchronous output
+	 */
+	private function handleNoStream($stream) {
+		$stream->start();
+
+		for ($i = 1; $i <= 10; $i++) {
+			$stream->push([
+				'type' => 'tick',
+				'index' => $i,
+				'time' => microtime(true)
+			]);
+			sleep(1);
+		}
+
+		$stream->finish([
+			'type' => 'done',
+			'time' => microtime(true)
+		]);
+
+		return '';
+	}
+
+	/**
+	 * Short Polling
+	 * POST = start
+	 * GET = retrieve next event
+	 */
+	private function handleShortPolling($stream) {
+
+		if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+			return $this->shortPollingInit($stream);
+		}
+
+		return $this->shortPollingNext($stream);
+	}
+
+	/**
+	 * POST: starts stream + registers delayed worker
+	 */
+	private function shortPollingInit($stream) {
+
+		$stream->start();
+
+		header('Content-Type: application/json');
+		echo json_encode(['type' => 'started']);
+
+		if (function_exists('fastcgi_finish_request')) {
+			fastcgi_finish_request();
+		} else {
+			if (ob_get_level() > 0) {
+				@ob_end_flush();
+			}
+			flush();
+		}
+
+		ignore_user_abort(true);
+
+		for ($i = 1; $i <= 10; $i++) {
+			$stream->push([
+				'type' => 'tick',
+				'index' => $i,
+				'time' => microtime(true)
+			]);
+			sleep(1);
+		}
+
+		$stream->finish([
+			'type' => 'done',
+			'time' => microtime(true)
+		]);
+
+		return '';
+	}
+
+	/**
+	 * GET: poll next event
+	 */
+	private function shortPollingNext($stream) {
+
+		$next = $stream->pollNext();
+
+		if ($next === null) {
+			echo json_encode(['type' => 'empty']);
+			return '';
+		}
+
+		echo json_encode($next);
+		return '';
+	}
+}
+

@@ -1,0 +1,211 @@
+<?php declare(strict_types=1);
+
+namespace EventTransport\Example;
+
+use Base3\Api\IOutput;
+use EventTransport\Api\IEventStreamFactory;
+use EventTransport\Api\IEventTransportConfig;
+
+/**
+ * Final clean demo for EventTransport.
+ * 
+ * Producer:
+ * 	POST ?action=start&stream=X
+ * 	Runs 10s, writes 1 event per second.
+ * 
+ * Poller:
+ * 	GET ?action=poll&stream=X
+ * 	Returns next event immediately, never blocks.
+ * 
+ * Transport logic (long/short/sse/ws) is NOT handled here.
+ * The Demo *always* uses ShortPollingEventStream internally,
+ * because Producer/Poller must be queue-based.
+ */
+class EventTransportDemo implements IOutput {
+
+	private IEventStreamFactory $factory;
+	private IEventTransportConfig $config;
+
+	public function __construct(IEventStreamFactory $factory, IEventTransportConfig $config) {
+		$this->factory = $factory;
+		$this->config = $config;
+	}
+
+	public static function getName(): string {
+		return 'eventtransportdemo';
+	}
+
+	/* ------------------------------------------------------------
+	 * Main router
+	 * ------------------------------------------------------------ */
+	public function getOutput(string $out = 'html', bool $final = false): string {
+
+		$action = $_GET['action'] ?? null;
+		$service = 'demo';
+		$streamId = $_GET['stream'] ?? uniqid("demo_", true);
+
+		switch ($action) {
+
+			case 'start':
+				return $this->runProducer($service, $streamId);
+
+			case 'poll':
+				return $this->pollEvents($service, $streamId);
+
+			default:
+				return $this->renderHtml();
+		}
+	}
+
+	/* ------------------------------------------------------------
+	 * HTML UI
+	 * ------------------------------------------------------------ */
+	private function renderHtml(): string {
+
+		$default = $this->config->getDefaultMode();
+		$fallback = implode(", ", $this->config->getFallbackOrder());
+
+		ob_start();
+		?>
+		<!DOCTYPE html>
+		<html>
+		<head>
+			<meta charset="utf-8">
+			<title>EventTransport Demo</title>
+			<style>
+				body { font-family:sans-serif; padding:20px; }
+				#logbox {
+					border:1px solid #555;
+					height:320px;
+					padding:10px;
+					background:#f5f5f5;
+					overflow-y:auto;
+					white-space:pre;
+				}
+				.infobox {
+					background:#eef;
+					padding:10px;
+					margin-bottom:15px;
+					border-left:4px solid #44f;
+				}
+			</style>
+		</head>
+		<body>
+
+		<h1>EventTransport Demo</h1>
+
+		<div class="infobox">
+			<b>Configured default mode:</b> <?= htmlspecialchars($default) ?><br>
+			<b>Fallback order:</b> <?= htmlspecialchars($fallback) ?><br>
+			<i>Transport logic is handled by EventTransport, not this demo.</i>
+		</div>
+
+		<button id="startBtn">Start Demo</button>
+
+		<h2>Log</h2>
+		<div id="logbox"></div>
+
+		<script>
+			function log(t){
+				const b = document.getElementById("logbox");
+				b.textContent += t + "\n";
+				b.scrollTop = b.scrollHeight;
+			}
+
+			document.getElementById("startBtn").addEventListener("click", () => {
+
+				const stream = "demo_" + Math.floor(Math.random() * 999999);
+				log("Starting 10-second producer: " + stream);
+
+				// Fire producer request (non-blocking on browser)
+				fetch("?action=start&stream=" + stream, {
+					method:"POST"
+				}).then(() => {
+					log("[producer finished]");
+				});
+
+				// IMPORTANT: start polling immediately
+				pollLoop(stream);
+			});
+
+			async function pollLoop(stream){
+				while(true){
+					const res = await fetch("?action=poll&stream=" + stream, {cache:"no-cache"});
+					const json = await res.json();
+
+					if (json.type !== "empty") {
+						log("[event] " + JSON.stringify(json));
+
+						if (json.type === "done") {
+							log("[completed]");
+							break;
+						}
+					}
+
+					await new Promise(r => setTimeout(r, 100)); // 100ms
+				}
+			}
+		</script>
+
+		</body>
+		</html>
+		<?php
+		return ob_get_clean();
+	}
+
+	/* ------------------------------------------------------------
+	 * Producer: 10 seconds, writes events to queue
+	 * ------------------------------------------------------------ */
+	private function runProducer(string $service, string $streamId) {
+
+		header('Content-Type: application/json; charset=utf-8');
+		header('Cache-Control: no-cache, must-revalidate');
+
+		// ALWAYS use queue-based stream (short)
+		$stream = $this->factory->createByMode("short", $service, $streamId);
+
+		$stream->start();
+
+		for ($i = 1; $i <= 10; $i++) {
+
+			$stream->push([
+				'type'  => 'tick',
+				'index' => $i,
+				'time'  => microtime(true)
+			]);
+
+			sleep(1);
+		}
+
+		$stream->finish([
+			'type' => 'done',
+			'time' => microtime(true)
+		]);
+
+		echo json_encode(['status'=>'producer_end']);
+		return '';
+	}
+
+	/* ------------------------------------------------------------
+	 * Poll next event (non-blocking)
+	 * ------------------------------------------------------------ */
+	private function pollEvents(string $service, string $streamId) {
+
+		header('Content-Type: application/json; charset=utf-8');
+		header('Cache-Control: no-cache, must-revalidate');
+
+		// ALWAYS use queue-based stream (short)
+		$stream = $this->factory->createByMode("short", $service, $streamId);
+
+		$next = $stream->pollNext();
+
+		if ($next === null) {
+			echo json_encode(['type'=>'empty']);
+			return '';
+		}
+
+		echo json_encode($next);
+		return '';
+	}
+}
+
